@@ -1,6 +1,7 @@
-import algebraic_notation
+import algebraic_utils
 import random as r
 import copy
+from fen_utils import board_map, map_to_fen
 
 all_squares = [
     "A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1",
@@ -401,6 +402,7 @@ class Queen:
         self.colour = colour
         self.capture_squares = []
         self.visible_squares = self.get_visible_squares()
+        self.conflict_squares = []
         self.under_attack = []
         self.legal_moves = []
 
@@ -427,12 +429,12 @@ class Queen:
 
     def get_legal_moves(self, conflict_sqrs, position):
         """
-        legal squares is a list of squares the piece could move to if the board was empty, conflict squares 
+        Legal squares is a list of squares the piece could move to if the board was empty, conflict squares 
         are the locations of other pieces on the board and capture squares are conflict squares with
-        opposition pieces on
+        opposition pieces on.
         """
-
         legal_moves = []
+        self.conflict_squares = conflict_sqrs
         file = ord(self.occupied_square[0])  # Convert file (e.g., 'A') to ASCII value for easy iteration
         rank = int(self.occupied_square[1])  # Convert rank (e.g., '1') to an integer
 
@@ -452,33 +454,36 @@ class Queen:
             d_file, d_rank = direction
             current_file = file
             current_rank = rank
-            
+
             while True:
                 current_file += d_file
                 current_rank += d_rank
-                
+
                 # Check if we've hit the edge of the board
                 if not (65 <= current_file <= 72 and 1 <= current_rank <= 8):  # 'A' to 'H' and 1 to 8
                     break
-                
+
                 # Convert back to chess notation
                 square = f"{chr(current_file)}{current_rank}"
-                
+
+
                 # If we hit a conflict square (either friendly or opponent)
                 if square in conflict_sqrs:
                     # Check if it's an opponent's piece (capture possibility)
-                    
                     if position[square].colour != self.colour:
                         legal_moves.append(square)  # Capture the opponent's piece
-                        
+
+
                     # Stop moving in this direction regardless
                     break
                 else:
-                    # If the square is empty and not blocked, it's a legal move
+                    # If the square is empty, it's a legal move
                     legal_moves.append(square)
 
         self.legal_moves = legal_moves
         return legal_moves
+
+
 
 class Pawn:
     def __init__(self, colour, occupied_square=None):
@@ -528,7 +533,7 @@ class Pawn:
 
         return list_of_squares
 
-    def get_legal_moves(self, position, en_passant):
+    def get_legal_moves(self, position, en_passant_target):
         """
         legal squares is a list of squares the piece could move to if the board was empty, conflict squares 
         are the locations of other pieces on the board and capture squares are conflict squares with
@@ -571,13 +576,13 @@ class Pawn:
                     continue
                     
 
-        if en_passant:
-            en_passant_file = ord(en_passant[0])
-            en_passant_rank = int(en_passant[1])
+        if en_passant_target:
+            en_passant_file = ord(en_passant_target[0])
+            en_passant_rank = int(en_passant_target[1])
             # Check if pawn is on the correct rank and can capture en passant
             if rank == en_passant_rank - (1 if self.colour == "white" else -1):
                 if ord(file) in [en_passant_file - 1, en_passant_file + 1]:
-                    valid_moves.append(en_passant)
+                    valid_moves.append(en_passant_target)
 
         self.legal_moves = valid_moves
         return valid_moves
@@ -709,7 +714,7 @@ class Rook:
                     
                     # If there's a capture piece, save the square
                     if position[square].colour != self.colour:
-                        legal_moves.append
+                        legal_moves.append(square)
 
                     # otherwise it is friendly, do not save and stop in this direction
                     break
@@ -735,12 +740,7 @@ class Bishop:
         return f"{self.occupied_square} {self.colour} {self.type}"
     
     def get_visible_squares(self):
-        list_of_squares = []
-        
-        for square in diagonals[self.occupied_square]:
-            list_of_squares.append(square)
-        
-        return list_of_squares
+        return diagonals[self.occupied_square] if self.occupied_square else []
 
     def get_legal_moves(self, conflict_sqrs, position):
         """
@@ -855,134 +855,538 @@ class King:
         self.legal_moves = legal_moves
         return legal_moves
 
-class Board:
-    def __init__(self, fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", active_colour="white"):
-
-        self.opponent_controlled_squares = {}
-        self.position = {}      # {"A1": "piece_obj", "A2": None, ...}
-        
-        self.legal_moves = {}
-        self.white_legal_moves = {}
-        self.black_legal_moves = {}    #{("rook", "black", "A1"): ["A2", "A3",...], ...}                                                                          
-
-        self.fen = fen
-        self.prev_move = None
-        self.last_occupied_square = None
-
-        self.active_colour = "white"
-        self.white_castle_kingside_rights = True
-        self.white_castle_queenside_rights = True
-        self.black_castle_kingside_rights = True
-        self.black_castle_queenside_rights = True
-        self.en_passant_move = None
+class FENParser:
+    def __init__(self, fen_string):
+        self.fen_string = fen_string
+        self.position = {}
+        self.active_colour = ''
+        self.castling_rights = ''
+        self.white_castle_kingside_rights = ''
+        self.white_castle_queenside_rights = ''
+        self.black_castle_kingside_rights = ''
+        self.black_castle_queenside_rights = ''
+        self.en_passant_target = ''
         self.halfmove_clock = 0
-        self.movenumber = 1
-        self.set_board_run = False
-
+        self.fullmove_number = 0
         self.white_king = None
+        self.white_king_square = None
         self.black_king = None
-        self.in_check = False
-        self.checking_pieces = []
-        self.pinned_pieces = []
-        self.checkmate = self.is_checkmate()
-              
+        self.black_king_square = None
+        self.parse_fen()
 
-    def piece_from_char(self, char, square):
-        """Helper function to return the correct piece object based on the FEN character."""
+    def parse_fen(self):
+        # Split the FEN into its components
+        fen_parts = self.fen_string.split()
 
+        if len(fen_parts) != 6:
+            raise ValueError("Invalid FEN string: Incorrect number of fields")
+    
+        piece_placement = fen_parts[0]  # Board layout
+        active_color = fen_parts[1]     # 'w' or 'b'
+        castling_rights = fen_parts[2]  # KQkq
+        en_passant = fen_parts[3]       # En passant target square
+        halfmove_clock = fen_parts[4]   # Halfmove clock
+        move_number = fen_parts[5]      # Full move number
+
+        # 1. Set the active color
+        if active_color not in ('w', 'b'):
+            raise ValueError("Invalid active color: must be 'w' or 'b'")
+        self.active_colour = "white" if active_color == 'w' else "black"
+
+        # 2. Set castling rights
+        self.castling_rights = castling_rights
+        self.white_castle_kingside_rights = True if 'K' in castling_rights else False
+        self.white_castle_queenside_rights = True if 'Q' in castling_rights else False
+        self.black_castle_kingside_rights = True if 'k' in castling_rights else False
+        self.black_castle_queenside_rights = True if 'q' in castling_rights else False
+
+        # 3. Set en passant moves (if any)
+        if en_passant != '-':
+            self.en_passant_target = en_passant.upper()
+        else:
+            self.en_passant_target = None
+
+        # 4. Set halfmove clock and move number
+        try:
+            self.halfmove_clock = int(halfmove_clock)
+            self.fullmove_number = int(move_number)
+        except ValueError:
+            raise ValueError("Halfmove clock and fullmove number must be integers")
+
+        # 5. Set up the pieces on the board
+        rows = piece_placement.split('/')
+        if len(rows) != 8:
+            raise ValueError("Invalid piece placement data: must have 8 rows")
+        ranks = 8  # Start from rank 8 and go down to 1
+
+        for row in rows:
+            file = 65  # ASCII value of 'A'
+            file_count = 0
+            for char in row:
+                if char.isdigit():
+                    # Empty squares, so move the file index forward and create empty squares with None
+                    for _ in range(int(char)):
+                        square = f"{chr(file)}{ranks}"
+                        self.position[square] = None  # Empty square
+                        file += 1  # Move to the next file
+                        file_count += 1
+                elif char.isalpha():
+                    # Place the piece on the correct square
+                    square = f"{chr(file)}{ranks}"
+                    self.position[square] = PieceFactory.create_piece(char, square)
+                    
+                    # Record the king squares while we're here
+                    if char == "k":
+                        self.black_king = self.position[square]
+                        self.black_king_square = square
+
+                    elif char == "K":
+                        self.white_king = self.position[square]
+                        self.black_king_square = square
+
+                    file += 1  # Move to the next file
+                    file_count += 1
+                else:
+                    raise ValueError(f"Invalid character in piece placement: {char}")
+            if file_count != 8:
+                raise ValueError("Invalid piece placement data: each row must have exactly 8 columns")
+            ranks -= 1  # Move to the next rank
+    
+    def get_position(self):
+        return self.position
+
+    def get_active_colour(self):
+        return self.active_colour
+
+    def get_castling_rights_str(self):
+        return self.castling_rights
+
+    def get_castling_rights(self, colour, side):
+        return getattr(self, f"{colour}_castle_{side}_rights")
+
+    def get_en_passant_target(self):
+        return self.en_passant_target
+
+    def get_halfmove_clock(self):
+        return self.halfmove_clock
+
+    def get_fullmove_number(self):
+        return self.fullmove_number
+    
+    def get_king(self, colour):
+        return getattr(self, f"{colour}_king")
+
+class PieceFactory:
+    PIECE_MAP = {
+        'r': Rook,
+        'n': Knight,
+        'b': Bishop,
+        'q': Queen,
+        'k': King,
+        'p': Pawn,
+    }
+
+    @staticmethod
+    def create_piece(char, square):
         colour = "white" if char.isupper() else "black"
         piece_char = char.lower()
-        if piece_char == 'r':
-            return Rook(colour, occupied_square=square)
-        elif piece_char == 'n':
-            return Knight(colour, occupied_square=square)
-        elif piece_char == 'b':
-            return Bishop(colour, occupied_square=square)
-        elif piece_char == 'q':
-            return Queen(colour, occupied_square=square)
-        elif piece_char == 'k':
-            return King(colour, occupied_square=square)
-        elif piece_char == 'p':
-            return Pawn(colour, occupied_square=square)
-        return None
+        piece_class = PieceFactory.PIECE_MAP.get(piece_char)
+        if piece_class:
+            return piece_class(colour, occupied_square=square)
+        else:
+            raise ValueError(f"Unknown piece character: {char}")
+
+class LegalMoveGenerator:
+    def __init__(self, position, active_colour, en_passant_target, castling_rights, opp_king):
+        self.position = position
+        self.active_colour = active_colour
+        self.en_passant_target = en_passant_target
+        self.castling_rights = castling_rights
+        self.opp_king = opp_king
+        self.in_check = False
+        self.is_checkmate = False
+        self.checking_pieces = []
+
+        # These will store the results
+        self.white_legal_moves = {}
+        self.black_legal_moves = {}
+        self.legal_moves = {}
+        self.white_king = None
+        self.black_king = None
+        self.generate_legal_moves()
+        
+    def generate_legal_moves(self):
+        """
+        Generates all legal moves for the current board position.
+        """
+        king_squares = {}   # Keep track of kings for later
+
+        for square, piece in self.position.items():
+            if not piece:
+                continue  # Empty square
+
+            conflict_squares = []
+
+            # Identify conflict squares (squares occupied by any piece)
+            for visible_square in piece.visible_squares:
+                if self.position.get(visible_square):
+                    conflict_squares.append(visible_square)
+
+            # Get legal moves based on piece type
+            if piece.type == "pawn":
+                legal_moves = piece.get_legal_moves(position=self.position, en_passant_target=self.en_passant_target)
+            elif piece.type in ["queen", "rook", "bishop", "knight"]:
+                legal_moves = piece.get_legal_moves(conflict_sqrs=conflict_squares, position=self.position)
+            elif piece.type == "king":
+                legal_moves = piece.get_legal_moves(conflict_sqrs=conflict_squares, position=self.position)
+                king_squares[square] = legal_moves
+                setattr(self, f"{piece.colour}_king", piece)
+            else:
+                # Handle other piece types if necessary
+                legal_moves = []
+
+            # Store legal moves
+            if piece.colour == "white":
+                self.white_legal_moves[piece] = legal_moves
+            else:
+                self.black_legal_moves[piece] = legal_moves
+
+        # Handle king moves to avoid moving into check
+        self.adjust_king_moves(king_squares)
+
+        # Assign capture squares and under attack attributes
+        self.assign_capture_and_attack_squares()
+
+        # Handle checks
+        self.handle_checks()
+
+        # Handle en passant moves
+        if self.en_passant_target:
+            passant_pawns = self.find_en_passant_moves()
+
+            if passant_pawns:
+                if self.active_colour == "white":
+                    for piece in passant_pawns:
+                        self.white_legal_moves[piece].append(self.en_passant_target)
+
+                else:
+                    for piece in passant_pawns:
+                        self.white_legal_moves[piece].append(self.en_passant_target)
+
+        # Handle pinned pieces
+        self.handle_pinned_pieces()
+
+        # Handle castling moves
+        self.handle_castling_moves()
+
+    def handle_checks(self):
+        
+        print("handling checks...")
+        checking_pieces = []
+        colour = "white" if self.active_colour == "white" else "black"
+        king = getattr(self, f"{colour}_king")
+        opp_colour = "white" if self.active_colour == "black" else "black"
+        opp_legal_moves = getattr(self, f"{opp_colour}_legal_moves")
+
+        for piece, moves in opp_legal_moves.items():
+            if king.occupied_square in moves:
+                checking_pieces.append(piece)
+
+        print("checking pieces: ", checking_pieces)
+        if checking_pieces:
+            print("checking pieces detected, setting self to in check...")
+            self.in_check = True
+            self.checking_pieces = checking_pieces
+            moves = self.generate_in_check_moves()
+
+            if not moves:
+                self.is_checkmate = True
+
+            if self.active_colour == "white":
+                self.white_legal_moves = moves
+            else:
+                self.black_legal_moves = moves
+
+    def adjust_king_moves(self, king_squares):
+        for square, moves in king_squares.items():
+            king = self.position[square]
+            valid_moves = []
+
+            if not moves:
+                king.legal_moves = []
+                if king.colour == "white":
+                    self.white_legal_moves[king] = []
+                else:
+                    self.black_legal_moves[king] = []
+            else:
+                king_move_set = set(moves)
+                # Determine the opponent's controlled squares
+                opposition_moves = self.black_legal_moves if king.colour == "white" else self.white_legal_moves
+                controlled_set = set()
+                for squares in opposition_moves.values():
+                    controlled_set.update(squares)
+                illegal_moves = king_move_set.intersection(controlled_set)
+
+                for move in moves:
+                    if move not in illegal_moves:
+                        valid_moves.append(move)
+
+                king.legal_moves = valid_moves
+                if king.colour == "white":
+                    self.white_legal_moves[king] = valid_moves
+                else:
+                    self.black_legal_moves[king] = valid_moves
+
+    def assign_capture_and_attack_squares(self):
+        white_pieces_positions = {piece.occupied_square for piece in self.white_legal_moves.keys()}
+        black_pieces_positions = {piece.occupied_square for piece in self.black_legal_moves.keys()}
+
+        for piece, moves in self.white_legal_moves.items():
+            capture_squares = set(moves) & black_pieces_positions
+            piece.capture_squares = capture_squares
+            for square in capture_squares:
+                target_piece = self.position[square]
+                if target_piece:
+                    target_piece.under_attack.append(piece)
+
+        for piece, moves in self.black_legal_moves.items():
+            capture_squares = set(moves) & white_pieces_positions
+            piece.capture_squares = capture_squares
+            for square in capture_squares:
+                target_piece = self.position[square]
+                if target_piece:
+                    target_piece.under_attack.append(piece)
+
+    def find_en_passant_moves(self):
+        
+        to_square = self.en_passant_target
+        valid_pawns = []
+
+        # the pawn must occupy one of the two squares adjacent
+        file = to_square[0]  
+        rank = to_square[1]
+
+        if file not in "ABCDEFGH":
+            raise ValueError("Error in check_en_passant rank")
+
+        if rank not in ["3", "6"]:
+            raise ValueError("Error in check_en_passant file")
+        
+        squares = [f"{chr(ord(file)-1)}{rank}", f"{chr(ord(file)+1)}{rank}"]
+
+        for square in squares:
+            piece = self.position.get(square)
+            if piece:
+                if piece.type == "pawn" and piece.colour == self.active_colour:
+                    valid_pawns.append(piece)
+            
+        return valid_pawns
+
+    def get_attacked_squares(self, opponent_moves):
+        attacked_squares = set()
+        for piece_moves in opponent_moves.values():
+            attacked_squares.update(piece_moves)
+        return attacked_squares
+
+    def handle_castling_moves(self):
+        if self.in_check:
+            return False
+
+        colour = self.active_colour
+
+        if not self.castling_rights:
+            return False
+
+        castle_moves = {}
+
+        # Get all squares attacked by the opponent
+        if colour == "white":
+            opponent_moves = self.black_legal_moves
+            king = self.white_king
+        else:
+            opponent_moves = self.white_legal_moves
+            king = self.black_king
+
+        attacked_squares = self.get_attacked_squares(opponent_moves)
+
+        if colour == "white":
+            # White's castling
+            if "Q" in self.castling_rights:
+                w_queenside = True
+
+                # Check that squares between king and rook are empty
+                for square in ["B1", "C1", "D1"]:
+                    if self.position[square]:
+                        w_queenside = False
+                        break
+
+                # Check that squares the king passes through are not attacked
+                for square in ["D1", "C1"]:
+                    if square in attacked_squares:
+                        w_queenside = False
+                        break
+
+                # Check that the king would not end up in check
+                if "C1" in attacked_squares:
+                    w_queenside = False
+
+                if w_queenside:
+                    # Update the king's legal moves
+                    if king in self.white_legal_moves:
+                        self.white_legal_moves[king].append("C1")
+                    else:
+                        self.white_legal_moves[king] = ["C1"]
+
+            if "K" in self.castling_rights:
+                w_kingside = True
+
+                # Check that squares between king and rook are empty
+                for square in ["F1", "G1"]:
+                    if self.position[square]:
+                        w_kingside = False
+                        break
+
+                # Check that squares the king passes through are not attacked
+                for square in ["F1", "G1"]:
+                    if square in attacked_squares:
+                        w_kingside = False
+                        break
+
+                # Check that the king would not end up in check
+                if "G1" in attacked_squares:
+                    w_kingside = False
+
+                if w_kingside:
+                    # Update the king's legal moves
+                    if king in self.white_legal_moves:
+                        self.white_legal_moves[king].append("G1")
+                    else:
+                        self.white_legal_moves[king] = ["G1"]
+
+        else:
+            # Black's castling
+            if "q" in self.castling_rights:
+                b_queenside = True
+
+                for square in ["B8", "C8", "D8"]:
+                    if self.position[square]:
+                        b_queenside = False
+                        break
+
+                for square in ["D8", "C8"]:
+                    if square in attacked_squares:
+                        b_queenside = False
+                        break
+
+                if "C8" in attacked_squares:
+                    b_queenside = False
+
+                if b_queenside:
+                    if king in self.black_legal_moves:
+                        self.black_legal_moves[king].append("C8")
+                    else:
+                        self.black_legal_moves[king] = ["C8"]
+
+            if "k" in self.castling_rights:
+                b_kingside = True
+
+                for square in ["F8", "G8"]:
+                    if self.position[square]:
+                        b_kingside = False
+                        break
+
+                for square in ["F8", "G8"]:
+                    if square in attacked_squares:
+                        b_kingside = False
+                        break
+
+                if "G8" in attacked_squares:
+                    b_kingside = False
+
+                if b_kingside:
+                    if king in self.black_legal_moves:
+                        self.black_legal_moves[king].append("G8")
+                    else:
+                        self.black_legal_moves[king] = ["G8"]
+
 
     def pinned_moves(self, pinned_piece, pinner, sqrs_to_king):
         """
         This piece has been detected as absolutely pinned (to king). It can only move where the pin remains
         """
         if pinned_piece.type == "knight":
-            # no circumstances in which a knight can move
+            # Knights cannot move when pinned
             return []
 
         potential_moves = []
+
+        # Add squares between pinned piece and king if they are in legal moves
         for square in sqrs_to_king:
             if square in pinned_piece.legal_moves:
                 potential_moves.append(square)
 
-        # add on the squares to the pinner including that square
+        # Extract positions
         pinner_sqr = pinner.occupied_square
         pinned_piece_sqr = pinned_piece.occupied_square
 
         pinner_file = pinner_sqr[0]
-        pinner_rank =  int(pinner_sqr[1])
+        pinner_file_int = ord(pinner_file.upper()) - 64
+        pinner_rank = int(pinner_sqr[1])
 
         pinned_piece_file = pinned_piece_sqr[0]
+        pinned_file_int = ord(pinned_piece_file.upper()) - 64
         pinned_piece_rank = int(pinned_piece_sqr[1])
 
-        # check if diagonal, file or rank pin
         if pinner_rank == pinned_piece_rank:
-
-            # convert files to A=1, ..., H=8
-            pinner_file_int = ord(pinner_file)-64
-            pinned_piece_file_int = ord(pinned_piece_file)-64
-
-            #shared file
-            for file in range(min(pinned_piece_file_int, pinner_file_int), max(pinned_piece_file_int, pinner_file_int)):
-                
-                square = f"{pinned_piece_rank}{file}"
+            # Shared rank (horizontal pin)
+            # Determine direction
+            step = 1 if pinner_file_int > pinned_file_int else -1
+            for file_int in range(pinned_file_int + step, pinner_file_int + step, step):
+                file = chr(file_int + 64)
+                square = f"{file}{pinned_piece_rank}"
                 if square in pinned_piece.legal_moves:
                     potential_moves.append(square)
 
         elif pinner_file == pinned_piece_file:
-            # shared rank
-            for rank in range(min(pinned_piece_rank, pinner_rank), max(pinned_piece_rank, pinner_rank)):
-                
+            # Shared file (vertical pin)
+            # Determine direction
+            step = 1 if pinner_rank > pinned_piece_rank else -1
+            for rank in range(pinned_piece_rank + step, pinner_rank + step, step):
                 square = f"{pinned_piece_file}{rank}"
                 if square in pinned_piece.legal_moves:
                     potential_moves.append(square)
-        
-        else:   # diagonally pinned
-            
-            # rooks and pawns cant move when pinned diagonally
-            if pinned_piece.type == "pawn" or pinned_piece.type == "rook":
+
+        else:  # Diagonal pin
+            # Rooks and pawns can't move when pinned diagonally
+            if pinned_piece.type == "rook":
                 return []
-            
-            # get the direction of the pinner from the pinned square
-            x = 1 if ord(pinned_piece_file) < ord(pinner_file) else -1
-            y = 1 if pinned_piece_rank < pinner_rank else -1
-            
-            squares_apart = abs(pinned_piece_rank - pinner_rank)
-            square_file = ord(pinned_piece_file) + x
-            square_rank = pinned_piece_rank + y
-            
-            for i in range(1, squares_apart):
-                square = f"{chr(square_file)}{square_rank}"
+
+            if pinned_piece.type == "pawn":
+                if pinner.occupied_square in pinned_piece.legal_moves:
+                    return [pinner.occupied_square]
+                else:
+                    return []
+
+            # Determine direction
+            file_step = 1 if pinner_file_int > pinned_file_int else -1
+            rank_step = 1 if pinner_rank > pinned_piece_rank else -1
+            num_squares = abs(pinner_file_int - pinned_file_int)
+
+            for i in range(1, num_squares + 1):
+                file_int = pinned_file_int + (file_step * i)
+                rank = pinned_piece_rank + (rank_step * i)
+                file = chr(file_int + 64)
+                square = f"{file}{rank}"
                 if square in pinned_piece.legal_moves:
                     potential_moves.append(square)
-                    square_file += x
-                    square_rank += y
-                    
-                else:
-                    break
-                
-        if pinned_piece.colour == "white":
-            self.white_legal_moves[pinned_piece] = potential_moves
-            
-        elif pinned_piece.colour == "black":
-            self.black_legal_moves[pinned_piece] = potential_moves
-            
 
-    def set_pinned_pieces(self):
+        # Update the piece's legal moves
+        pinned_piece.legal_moves = potential_moves
+
+        return potential_moves
+
+
+    def handle_pinned_pieces(self):
         """
         Checks for pinned pieces by scanning rows, files, and diagonals from the king's position.
         
@@ -1047,8 +1451,7 @@ class Board:
                             
                             if first_piece.occupied_square in piece.legal_moves:
                                 # valid pin
-                                
-                                self.pinned_pieces.append(first_piece)
+
                                 pinned_moves = self.pinned_moves(pinned_piece=first_piece, pinner=piece, sqrs_to_king = squares_tracked)
                                 first_piece.legal_moves = pinned_moves
 
@@ -1059,16 +1462,7 @@ class Board:
                                     
                                 break  # Stop searching in this direction
 
-
-    def is_checkmate(self):
-        """
-        checkmate checked upon initialisation.
-        """
-        self.set_legal_moves()
-        self.set_pinned_pieces()
-        
-        # determine if king is under attack
-        
+    def generate_in_check_moves(self):
         if self.active_colour == "white":
             king = self.white_king
             colour = "white"
@@ -1080,20 +1474,7 @@ class Board:
             colour = "black"
             opponent_moves = self.white_legal_moves
             active_user_moves = self.black_legal_moves
-
-        for piece, moves in opponent_moves.items():
-            if king.occupied_square in moves:
-                self.checking_pieces.append(piece)
         
-        if self.checking_pieces:
-            self.in_check = True
-        
-        else:
-            self.in_check = False
-            return False
- 
-        # In check, so must amend legal moves to get out of it
-
         legal_moves = {}
  
         king_moves = active_user_moves[king]
@@ -1113,11 +1494,14 @@ class Board:
                 legal_moves[king] = king_moves
 
         # the only way to deny checkmate remaining is to capture the attacking piece (if this is only one) or block
-        if len(self.checking_pieces) > 1 and not king_moves:
+        if len(self.checking_pieces) > 1:
+            if not king_moves:
+                # this cannot be blocked, the king cannot move so it is checkmate
+                return legal_moves
 
-            # this cannot be blocked, the king cannot move so it is checkmate
-            self.in_check = False
-            return True
+            else:
+                return {king: king_moves}
+
 
         # now we have determined that there is only one checking piece
         checking_piece = self.checking_pieces[0]
@@ -1170,18 +1554,8 @@ class Board:
             count_squares_between = end_file - start_file 
             
             if count_squares_between == 1:
-                # no squares to block, if no legal moves already - checkmate immediately
-                if not legal_moves:
-                    self.in_check = False
-                    return True
-            
-                if self.active_colour == "white":
-                    self.white_legal_moves = legal_moves
-                    
-                else: 
-                    self.black_legal_moves = legal_moves
-            
-                return False
+                # no squares to block, either capture or move king
+                return legal_moves
             
             blocking_squares = []
             for i in range(1, count_squares_between):
@@ -1211,17 +1585,8 @@ class Board:
             
 
             if count_ranks_between == 1:
-                if not legal_moves:
-                    self.in_check = False
-                    return True
+                return legal_moves
             
-                if self.active_colour == "white":
-                    self.white_legal_moves = legal_moves
-                    
-                else: 
-                    self.black_legal_moves = legal_moves
-                return False
-
             blocking_squares = []
             for i in range(1, count_ranks_between):
                 validrank = int(piece_rank) + i*y_dir
@@ -1232,18 +1597,7 @@ class Board:
 
         # now we have the squares that can be blocked on, we can check if pieces can move there
         if not blocking_squares:
-            if not legal_moves:
-                self.in_check = False
-                return True
-
-            else:            
-                if self.active_colour == "white":
-                    self.white_legal_moves = legal_moves
-                    
-                else: 
-                    self.black_legal_moves = legal_moves
-            
-                return False
+            return legal_moves
                 
         blocking_set = set(blocking_squares)
         
@@ -1257,383 +1611,58 @@ class Board:
                 else:
                     legal_moves[piece] = intersection_moves
         
+        return legal_moves
 
-        if not legal_moves:
-            self.in_check = False
-            return True
+    def get_check_status(self):
+        return self.in_check
     
-        if self.active_colour == "white":
-            self.white_legal_moves = legal_moves
-            
-        else: 
-            self.black_legal_moves = legal_moves
+    def get_checkmate_status(self):
+        print("getting check status...", self.in_check)
+        return self.is_checkmate
     
-        return False
+    def get_legal_moves(self, colour):
+        return getattr(self, f"{colour}_legal_moves")
 
-    def set_board(self): 
-        """Set up the board based on the provided FEN string"""
 
-        # Split the FEN into its components
-        fen_parts = self.fen.split()
-    
-        piece_placement = fen_parts[0]  # Board layout
-        active_color = fen_parts[1]     # 'w' or 'b'
-        castling_rights = fen_parts[2]  # KQkq
-        en_passant = fen_parts[3]       # En passant target square
-        halfmove_clock = fen_parts[4]   # Halfmove clock
-        move_number = fen_parts[5]      # Full move number
 
-        # 1. Set the active color
-        self.active_colour = "white" if active_color == 'w' else "black"
 
-        # 2. Set castling rights
-        self.white_castle_kingside = 'K' in castling_rights
-        self.white_castle_queenside = 'Q' in castling_rights
-        self.black_castle_kingside = 'k' in castling_rights
-        self.black_castle_queenside = 'q' in castling_rights
 
-        # 3. Set en passant moves (if any)
-        if en_passant != '-':
-            self.en_passant_moves = en_passant.upper()
-        else:
-            self.en_passant_moves = None
+class Board:
+    def __init__(self, fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"):
 
-        # 4. Set halfmove clock and move number
-        self.halfmove_clock = int(halfmove_clock)
-        self.movenumber = int(move_number)
+        self.fen_parser = FENParser(fen)
+        self.position = self.fen_parser.get_position()
+        self.active_colour = self.fen_parser.get_active_colour()
+        self.castling_rights = self.fen_parser.get_castling_rights_str()
+        self.white_castle_kingside_rights = self.fen_parser.get_castling_rights("white", "kingside")
+        self.white_castle_queenside_rights = self.fen_parser.get_castling_rights("white", "queenside")
+        self.black_castle_kingside_rights = self.fen_parser.get_castling_rights("black", "kingside")
+        self.black_castle_queenside_rights = self.fen_parser.get_castling_rights("black", "queenside")
+        self.en_passant_target = self.fen_parser.get_en_passant_target()
+        self.halfmove_clock = self.fen_parser.get_halfmove_clock()
+        self.fullmove_number = self.fen_parser.get_fullmove_number()                                                      
 
-        # 5. Set up the pieces on the board
-        rows = piece_placement.split('/')
-        ranks = 8  # Start from rank 8 and go down to 1
+        self.fen = fen
+        self.prev_move = None
+        self.last_occupied_square = None
 
-        for row in rows:
-            file = 65  # ASCII value of 'A'
-            for char in row:
-                if char.isdigit():
-                    # Empty squares, so move the file index forward and create empty squares with None
-                    for _ in range(int(char)):
-                        square = f"{chr(file)}{ranks}"
-                        self.position[square] = None  # Empty square
-                        file += 1  # Move to the next file
-                else:
-                    # Place the piece on the correct square
-                    square = f"{chr(file)}{ranks}"
-                    self.position[square] = self.piece_from_char(char, square)
-                    
-                    # Record the king squares while we're here
-                    if char == "k":
-                        self.black_king = self.position[square]
-                    elif char == "K":
-                        self.white_king = self.position[square]
+        self.white_king = self.fen_parser.get_king("white")
+        self.black_king = self.fen_parser.get_king("black")
 
-                    file += 1  # Move to the next file
-            ranks -= 1  # Move to the next rank
-
-        self.set_board_run = True
-
-    def get_destination_square(move):
-        """
-        Takes a move in algebraic notation and returns the square the piece is moved to.
-        """
-        move = move.replace('+', '').replace('#', '')  # Remove check or checkmate symbols
+        self.move_generator = LegalMoveGenerator(
+            position=self.position, 
+            active_colour=self.active_colour, 
+            en_passant_target=self.en_passant_target,
+            castling_rights=self.castling_rights,
+            opp_king=self.white_king if self.active_colour == "black" else self.black_king
+            )
         
-        # Handle castling
-        if move == 'O-O':  # Kingside castling
-            return 'g1' if '1' in move else 'g8'
-        elif move == 'O-O-O':  # Queenside castling
-            return 'c1' if '1' in move else 'c8'
+        self.move_generator.generate_legal_moves()
         
-        # Handle pawn promotion (e.g., e8=Q or e8Q)
-        if '=' in move:
-            move = move.split('=')[0]  # Remove the promotion part (e.g., 'e8=Q' -> 'e8')
-        elif move[-1].isupper():
-            move = move[:-1]  # Remove the promoted piece (e.g., 'e8Q' -> 'e8')
-
-        # For normal moves, the last two characters indicate the destination square
-        return move[-2:]  # Return the last two characters as the destination square
-
-    
-    def get_en_passant(self):
-
-        # Assuming move exists - self.en_passant != None
-        to_square = self.en_passant_move
-
-        # the pawn must occupy one of the two squares adjacent
-        file = to_square[0]  
-        rank = to_square[1]
-
-        if file not in "ABCDEFGH":
-            raise ValueError("Error in check_en_passant rank")
-
-        if rank not in ["4", "5"]:
-            raise ValueError("Error in check_en_passant file")
-        
-        pawn_locations = [f"{chr(ord(file)-1)}{rank}", f"{chr(ord(file)+1)}{rank}"]
-
-        potential_pawns = [
-            ("pawn", self.active_colour, pawn_locations[0]),
-            ("pawn", self.active_colour, pawn_locations[1]),
-        ]
-
-        return potential_pawns
-        # return [("pawn", "white", "D5"), ("pawn", "white", "F5")]
-        # then we can append E6 onto the moves for that piece, if it already exists in the legal moves dict
-
-    def check_castle(self):
-        if self.in_check:
-            return False
-        
-        colour = self.active_colour
-
-        if not getattr(self, f"{self.active_colour}_castle_kingside_rights") or getattr(self, f"{self.active_colour}_castle_queenside_rights"):
-            return False
-        
-        castle_moves = {}
-
-        if colour == "white":
-            if self.white_castle_queenside_rights:
-                
-                w_queenside = True
-                
-                # check B1, C1, D1 are empty
-                # check no black piece has C1, D1 in visible squares
-                
-                for piece in self.position.keys():
-                    if piece[2] in ["B1", "C1", "D1"]:
-                        # queenside castle blocked
-                        w_queenside = False
-                        break
-
-                for squares in self.black_legal_moves.values():
-                    if "B1" in squares or "C1" in squares:
-                        # castling through or into check, cannot castle
-                        w_queenside = False
-                        break
-
-                if w_queenside:
-                    castle_moves[("king", "white", "E1")] = "C1"
-
-            if self.white_castle_kingside_rights:
-                
-                w_kingside = True
-                
-                # check F1, G1 are empty
-                # check no black piece has F1, G1 in visisble squares
-                
-                for piece in self.position.keys():
-                    if piece[2] in ["F1", "G1"]:
-                        # kingside castle blocked
-                        w_kingside = False
-                        break
-                
-                for squares in self.black_legal_moves.values():
-                    if "F1" in squares or "G1" in squares:
-                        # kingside castle blocked
-                        w_kingside = False
-                        break
-
-                for squares in self.black_legal_moves.values():
-                    if "F1" in squares or "G1" in squares:
-                        # castling through or into check, cannot castle
-                        w_kingside = False
-                        break
-
-                if w_kingside:
-                    castle_moves[("king", "white", "E1")] = "G1"
-
-        elif self.active_colour == "b":
-            if self.black_castle_queenside_rights:
-                
-                b_queenside = True
-                
-                # check B8, C8, D8 are empty
-                # check no black piece has C8, D8 in visible squares
-                
-                for piece in self.position.keys():
-                    if piece[2] in ["B8", "C8", "D8"]:
-                        # queenside castle blocked
-                        b_queenside = False
-                        break
-
-                for squares in self.white_legal_moves.values():
-                    if "B8" in squares or "C8" in squares:
-                        # castling through or into check, cannot castle
-                        b_queenside = False
-                        break
-
-                if b_queenside:
-                    castle_moves[("king", "black", "E8")] = "C8"
-
-            if self.black_castle_kingside_rights:
-                
-                b_kingside = True
-                
-                # check F8, G8 are empty
-                # check no black piece has F8, G8 in visisble squares
-                
-                for piece in self.position.keys():
-                    if piece[2] in ["F8", "G8"]:
-                        # kingside castle blocked
-                        b_kingside = False
-                        break
-                
-                for squares in self.white_legal_moves.values():
-                    if "F8" in squares or "G8" in squares:
-                        # kingside castle blocked
-                        b_kingside = False
-                        break
-
-                for squares in self.white_legal_moves.values():
-                    if "F8" in squares or "G8" in squares:
-                        # castling through or into check, cannot castle
-                        b_kingside = False
-                        break
-
-                if b_kingside:
-                    castle_moves[("king", "black", "E8")] = "G8"
-
-    def set_legal_moves(self): # {["rook", "white", "A1"]: ["A2", "A3", ...], ...}
-        """
-        Gets all the ordinary moves for pieces, run after set_board
-        """
-        # reset object attributes
-        self.white_legal_moves = {}
-        self.black_legal_moves = {}
-
-        legal_moves_dict = {}
-        king_squares = {}   # keep track of these for later
-        
-        if not self.set_board_run:      # only want to run once, while legal_moves will happen more
-            self.set_board()
-        
-        for square, piece in self.position.items():
-            # {"A1": "Rook obj", ...}
-            
-            if not piece:
-                # empty square
-                continue
-            
-            conflict_squares = []
-            
-            # checking all the squares it could move to to see if it reaches an occupied square
-            for visible_square in piece.visible_squares:
-                if self.position.get(visible_square):
-                    
-                    # if this is triggered, we save the square as a conflict
-                    conflict_squares.append(visible_square)
-
-            if piece.type == "pawn":
-                legal_moves = piece.get_legal_moves(position=self.position, en_passant=self.en_passant_move)
-                        
-            elif piece.type == "queen":
-                legal_moves = piece.get_legal_moves(conflict_sqrs=conflict_squares, position=self.position)
-
-            elif piece.type == "knight":
-                legal_moves = piece.get_legal_moves(conflict_sqrs=conflict_squares, position=self.position)
-
-            elif piece.type == "rook":
-                legal_moves = piece.get_legal_moves(conflict_sqrs=conflict_squares, position=self.position)
-
-            elif piece.type == "bishop":
-                legal_moves = piece.get_legal_moves(conflict_sqrs=conflict_squares, position=self.position)
-                
-            elif piece.type == "king":
-                legal_moves = piece.get_legal_moves(conflict_sqrs=conflict_squares, position=self.position)
-                # wait until the rest of the pieces are set, so we can adjust for moves into check
-                king_squares[square] = legal_moves
-                setattr(self, f"{piece.colour}_king", piece)
-                
-            
-            if piece.colour == "white":
-                self.white_legal_moves[piece] = legal_moves
-            
-            else:
-                self.black_legal_moves[piece] = legal_moves
-                
-            
-            legal_moves_dict[piece] = legal_moves
-
-        # now we can check kings legal moves for defended squares
-
-        for square, moves in king_squares.items():
-
-            king = self.position[square]
-            valid_moves = []
-
-            if not moves:
-                king.legal_moves = []
-                legal_moves_dict[king] = []
-                if king.colour == "white":
-                    self.white_legal_moves[king] = []
-                else:
-                    self.black_legal_moves[king] = []
-
-            else:
-                
-                king_move_set = set(moves)
-                # whether or not this square is occupied, we must check if it is controlled
-                opposition_controlled_squares = getattr(self, f"{king.colour}_legal_moves")
-                controlled_set = set()
-                for squares in opposition_controlled_squares.values():
-                    controlled_set.update(squares)
-                illegal_moves = king_move_set.intersection(controlled_set)
-
-                for square in moves:
-                    if square not in illegal_moves:
-                        valid_moves.append(square)
-                
-
-                king.legal_moves = valid_moves
-
-                if king.colour == "white":
-                    self.white_legal_moves[king] = valid_moves
-
-                else:
-                    self.black_legal_moves[king] = valid_moves
-                       
-        # assign piece object capture squares and under attack attributes
-        white_piece_set = set(self.white_legal_moves)
-        black_piece_set = set(self.black_legal_moves)
-        
-        for piece, squares in self.white_legal_moves.items():
-            squares_set = set(squares)
-            capture_squares = squares_set & black_piece_set
-            piece.capture_squares = capture_squares
-            for square in capture_squares:
-                self.position[square].under_attack.append(piece)
-            #print(piece, " capture squares: ", piece.capture_squares)
-        for piece, squares in self.black_legal_moves.items():
-            squares_set = set(squares)
-            capture_squares = squares_set & white_piece_set
-            piece.capture_squares = capture_squares
-            for square in capture_squares:
-                self.position[square].under_attack.append(piece)
-            #print(piece, " capture squares: ", piece.capture_squares)
-
-        # check for pins 
-        self.set_pinned_pieces()
-                
-        # add en passant move if available
-        if self.en_passant_move:
-            en_passant_moves = self.get_en_passant()
-            for pawn in en_passant_moves:
-                if pawn in legal_moves_dict.keys():
-                    legal_moves_dict[pawn].append(self.en_passant_move)
-
-                    if self.active_colour == "white":
-                        self.white_legal_moves[pawn].append(self.en_passant_move)
-                    
-                    else: 
-                        self.black_legal_moves[pawn].append(self.en_passant_move)
-
-        # add castle move if available
-        castle_moves = self.check_castle()
-        if castle_moves:
-            for king, square in castle_moves:
-                legal_moves_dict[king].append(square)
-                getattr(self, f"{king[1]}_legal_moves")[king].append(square)
-        
-        self.legal_moves = legal_moves_dict
+        self.in_check = self.move_generator.get_check_status()
+        self.is_checkmate = self.move_generator.get_checkmate_status()
+        self.white_legal_moves = self.move_generator.get_legal_moves("white")
+        self.black_legal_moves = self.move_generator.get_legal_moves("black")
 
         
 class Bot:
@@ -1644,637 +1673,11 @@ class Bot:
         self.turn = None
         self.board = None
 
-    def verify_move(self, move, board, user_colour):
-        
-        verification = {
-            "verify_type": None,
-            "verify_from_square": None,
-            "verify_to_square": None,
-            }
-        
-        parsed_move = algebraic_notation.parse_notation(move)
-        print("parsing move: ", move, " -> ", parsed_move)
-        
-        parsed_move["piece"] = parsed_move["piece"].lower().strip()
-        parsed_move["to"] = parsed_move["to"].upper().strip()
-
-        # board state context may be needed
-        from_sqr = parsed_move["from"]
-
-        if isinstance(from_sqr, str) and len(from_sqr) == 2:     
-            print("from square found: ", from_sqr)
-            if from_sqr.upper() in all_squares:
-                parsed_move["piece"] = parsed_move["piece"].lower()
-                parsed_move["from"] = from_sqr.upper()
-                return parsed_move
-            else:
-                return False
-
-        else:
-            # since the function parse_notation cannot know the starting square from the move along we must deduce it here
-            
-            parsed_move_from = parsed_move["from"]
-
-            user_legal_moves = getattr(board, f"{user_colour}_legal_moves")    
-            print("user legal moves: ", user_legal_moves)
-            
-            # iterate over the pieces to see if there is the same type with a to square in the key
-            potential_moved_pieces = []
-            
-            for piece in user_legal_moves:
-                if piece.type == parsed_move["piece"] and parsed_move["to"] in user_legal_moves[piece]:
-                    potential_moved_pieces.append(piece)
-            
-            print("potential moved pieces: ", potential_moved_pieces)
-            # in the case there are no pieces that can move to this square
-            if len(potential_moved_pieces) == 0:
-                return False
-
-            elif len(potential_moved_pieces) == 1:
-                piece = potential_moved_pieces[0]
-                parsed_move["from"] = piece.occupied_square
-                moved_piece = piece
-                print("1 potential piece: ", piece, " parsed_move['from']: ", parsed_move["from"], "moved_piece = ", moved_piece)
-            
-            # if there is more than one piece that fits this criteria, we have to dig deeper to find out which is intended
-            else: # > 1
-                
-                # there are 4 cases we must check and we must determine which is the case by the notation
-                # two pieces on the same diagonal, we already have the square
-                # the other case are that the pieces share a rank or a file, two pawns able to capture or multiple knights
-                if parsed_move_from.isalpha():
-                    # we have the unique file of the piece intended
-                    
-                    from_file = parsed_move_from.upper()
-                    for piece in potential_moved_pieces:
-                       
-                        piece_file = piece.occupied_square
-                        
-                        if piece_file == from_file:
-                            moved_piece = piece
-                            parsed_move["from"] = piece.occupied_square
-                            break
-
-                    return False
-                
-                elif parsed_move_from.isnum():
-                    # we habe the unique rank of the piece intended
-
-                    from_rank = parsed_move_from
-                    for piece in potential_moved_pieces:
-                        
-                        piece_rank = piece.occupied_square[1]
-
-                        if piece_rank == from_rank:
-                            moved_piece = piece
-                            parsed_move["from"] = piece.occupied_square
-                            break
-                    
-                    return False
-        
-        # so now we have the piece and its start and end position we can verify
-        
-        # first check that the piece exists on from square, is users piece and can access the landing square
-
-        legal_moves = getattr(board, f"{moved_piece.colour}_legal_moves")
-        
-        if not parsed_move["to"] in legal_moves[moved_piece]:
-            print("parsed_move[to] not in legal moves: ", parsed_move["to"], " not in ", legal_moves[moved_piece])
-            return False
-        print()
-        print("Adjusted parsed move: ", parsed_move)
-        return parsed_move
-
-    def create_castle_rank(self, move, fen_rank):
-        if move == ("king", "E1", "G1"):
-            # white kingside castle
-            new_rank = fen_rank[:5] + "1RK1"
-        
-        elif move == ("king", "E1", "C1"):
-            # white queenside castle
-            new_rank = "2KR1" + fen_rank[6:]
-
-        elif move == ("king", "E8", "G8"):
-            # black kingside castle
-            new_rank = fen_rank[:5] + "1rk1"
-
-        elif move == ("king", "E8", "C8"):
-            # black queenside castle
-            new_rank = "2kr1" + fen_rank[6:]
-        
-        else:
-            raise ValueError("Error in create_castle_rank, move not in valid castling set")
-        
-        return new_rank
-
-    def board_map(self, ranks):
-        """ 
-        Takes a list of ranks in FEN order: ["rnbqkbnr", "pppppppp", "8", "8", "8", "8", "PPPPPPPP", "RNBQKBNR"] and returns a dictionary of its parts:
-        {
-            8:{
-            "A": "r",
-            "B": "n",
-            ...
-            }
-            
-            7:{
-            "A": "p"
-            ...
-            }
-            ...
-        }
-        """
-        files = ["A", "B", "C", "D", "E", "F", "G", "H"]
-
-        # Mapping rank to a dictionary with files as keys and pieces as values (or 1 for empty squares)
-        rank_map = {}
-        for i in range(len(ranks)):
-            row_dict = {}
-            rank = ranks[i]
-            file_idx = 0  # To track the file (A, B, C, ...)
-
-            for char in rank:
-                if char.isdigit():
-                    # If it's a digit, it represents empty squares, assign 1 for empty spaces
-                    for _ in range(int(char)):  # Repeat for the number of empty squares
-                        row_dict[files[file_idx]] = 1
-                        file_idx += 1  # Move to the next file
-                else:
-                    # Assign the piece to the current file
-                    row_dict[files[file_idx]] = char
-                    file_idx += 1  # Move to the next file
-
-            # Assign the row dictionary to the rank (8 - i)
-            rank_map[8 - i] = row_dict
-
-        return rank_map
-
-    def map_to_fen(self, rank_map):
-        fen_rows = []
-        
-        for rank in range(8, 0, -1):  # Iterate from rank 8 down to 1
-            row = rank_map[rank]
-            fen_row = ""
-            empty_count = 0
-            
-            for file in ["A", "B", "C", "D", "E", "F", "G", "H"]:
-                if row[file] == 1:  # Detect empty squares
-                    empty_count += 1
-                else:
-                    if empty_count > 0:
-                        fen_row += str(empty_count)  # Add empty square count
-                        empty_count = 0
-                    fen_row += row[file]  # Add the piece (letter)
-            
-            # If the row ends with empty squares, add the count
-            if empty_count > 0:
-                fen_row += str(empty_count)
-            
-            fen_rows.append(fen_row)
-
-        # Join the rows with '/' to create the full FEN string
-        fen_string = "/".join(fen_rows)
-        return fen_string
-
-    def get_promotion(self, promotion_to, pawn):
-        promotion_dict = {
-            "P": {
-                "Queen" :   "Q",
-                "Rook"  :   "R",
-                "Bishop":   "B",
-                "Knight":   "N"
-            },
-            "p": {
-                "Queen" :   "q",
-                "Rook"  :   "r",
-                "Bishop":   "b",
-                "Knight":   "n"
-            }
-        }
-        
-        return promotion_dict[pawn][promotion_to]
-
-    def update_fen(self, prev_fen, move):
-        """
-        takes a algebraic notation dict and the previous fen to create a new fen
-        """
-        new_fen_components = {
-            "piece_placement": None,
-            "active_colour": None,
-            "castling_rights": None,
-            "en_passant": None,
-            "halfmove_clock": None,
-            "move_number": None
-        }
-        print("running update_fen")
-        move_tuple = (move["piece"].lower(), move["from"], move["to"])
-        print("move tuple: ", move_tuple)
-        # Split the FEN into its components
-        fen_parts = prev_fen.split()
-        piece_placement = fen_parts[0]  # Board layout
-        active_color = fen_parts[1]     # 'w' or 'b'
-        castling_rights = fen_parts[2]  # Castling rights
-        en_passant = fen_parts[3]       # En passant target square
-        halfmove_clock = fen_parts[4]   # Halfmove clock
-        move_number = fen_parts[5]      # Full move number
-
-        # toggle active colour
-        new_fen_components["active_colour"] = "w" if active_color == "b" else "b"
-
-        # increment move number
-        new_fen_components["move_number"] = str(int(move_number) +1)
-
-        # Board layout
-        rows = piece_placement.split('/')       # rows = ["rnbqkbr", "pppppppp", "8", ...]
-        
-        # get the index of rows that contains our piece        
-        piece_from_rank = rows[ int(move_tuple[1][1]) -1]   # One dictionary of files mapped to a piece (or a 1 if unoccupied)
-
-        # Check for castling - we will need to move the rook ********************* needs fixing ************************
-        castle_moves = [("king", "E1", "G1"), ("king", "E1", "C1"), ("king", "E8", "G8"), ("king", "E8", "C8")]
-        if move_tuple in castle_moves:
-            new_rank = self.create_castle_fen(self, move_tuple, fen_rank=piece_from_rank)
-            rows[ int(move_tuple[1][1]) -1] = new_rank
-
-            rows_str = "/".join(rows)
-
-        else:
-            # map the rows to their corresponding rank
-            rank_map = self.board_map(rows)      # {8: {"A": "r", "B": "n", ...}, 7: {"A": "p", "B": "p", ...}, ... }
-    
-            parsed_from_rank = rank_map[int(move_tuple[1][1])] 
-
-            if len(parsed_from_rank) != 8:
-                raise(ValueError("Error in parsing FEN rank - from square"))        
-
-            from_file = move_tuple[1][0].upper()     # "A" or "B" ...
-
-            piece_char = parsed_from_rank[from_file]        # ="p" or "P" or "q" or "Q" etc.
-            
-            # check for promotion
-            if move["promotion"]:
-                piece_char = self.get_promotion(promotion_to=move["promotion"], pawn=piece_char)  
-                
-            # we can repeat the same steps to get the landing square index
-
-            parsed_to_rank = rank_map[ int(move_tuple[2][1]) ]    # {"A": "1", "B": "1", ...}
-            
-            # check for promotion
-            if move["promotion"]:
-                piece_char = self.get_promotion(self, promotion_to=move["promotion"], pawn=piece_char)        
-
-            if len(parsed_to_rank) != 8:
-                raise(ValueError("Error in parsing FEN rank - to square"))        
-            
-            to_file = move_tuple[2][0].upper()      # "A" or "B" ...
-            
-            landing_char = parsed_to_rank[to_file]      # "1" or "2" ...
-
-            new_to_rank = parsed_to_rank
-            new_to_rank[to_file] = piece_char
-
-            new_from_rank = parsed_from_rank
-            new_from_rank[from_file] = 1
-
-            rank_map[int(move_tuple[1][1])] = new_from_rank
-            rank_map[int(move_tuple[2][1])] = new_to_rank
-            
-            # convert the rank strings back into FEN format
-            rows_str = self.map_to_fen(rank_map)
-                          
-        # By this point, our new rows should be stored in rows
-        
-        new_fen_components["piece_placement"] = rows_str
-
-        # update halfmove clock
-        if landing_char != "1" or piece_char in ["p", "P"]:    
-            # if capture or pawn move, reset clock
-            new_fen_components["halfmove_clock"] = "0"
-        
-        else:
-            new_fen_components["halfmove_clock"] = str(int(halfmove_clock) +1)
-
-        # check for valid en passant moves
-        # the last move had to be a pawn move to the 5th rank if it was black and 4th rank if it was white
-
-        to_rank = move_tuple[2][1]
-        from_rank = move_tuple[1][1]
-
-        # pawn has to have move two squares off start square
-        black_move_two = move_tuple[0] == "pawn" and active_color == "b" and to_rank == "5" and from_rank == "7"
-        white_move_two = move_tuple[0] == "pawn" and active_color == "w" and to_rank == "4" and from_rank == "2"
-            
-        if black_move_two:
-            
-            # get adjacent files
-            if to_file == "A":
-                adj_files = [chr(ord(to_file)+1)]
-            
-            elif to_file == "H":
-                adj_files = [chr(ord(to_file)-1)]
-            
-            else:
-                adj_files = [chr(ord(to_file)-1), chr(ord(to_file)+1)]
-                
-            for file in adj_files:
-
-                if new_to_rank[file] == "P":
-                    # save en passant as the square behind the pawn
-                    new_fen_components["en_passant"] = f"{move_tuple[2][0]}{int(move_tuple[2][1]) +1}"
-
-            if not new_fen_components["en_passant"]:
-                new_fen_components["en_passant"] = "-"
-
-
-        elif white_move_two:
-            # get adjacent files
-            if to_file == "A":
-                adj_files = [chr(ord(to_file)+1)]
-            
-            elif to_file == "H":
-                adj_files = [chr(ord(to_file)-1)]
-            
-            else:
-                adj_files = [chr(ord(to_file)-1), chr(ord(to_file)+1)]
-            
-            for file in adj_files:
-
-                if new_to_rank[file] == "p":
-                    # save en passant as the square behind the pawn
-                    new_fen_components["en_passant"] = f"{move_tuple[2][0]}{int(move_tuple[2][1]) -1}"
-
-            if not new_fen_components["en_passant"]:
-                new_fen_components["en_passant"] = "-"
-            
-        else:
-            new_fen_components["en_passant"] = "-" 
-
-        # check for change in castling rights
-
-        # Only things that change this is if the player moves the king - invalidates all rights, or a rook, invalidates one side
-
-        if castling_rights == "-":
-            new_fen_components["castling_rights"] = "-"
-            
-        elif active_color == "w" and ("K" in castling_rights or "Q" in castling_rights):
-
-            if move_tuple[0] == "king":
-
-                new_fen_components["castling_rights"] = castling_rights.replace("K", "").replace("Q", "")
-            
-            elif move_tuple[0] == "rook":
-
-                if move_tuple[1] == "A1":
-                    new_fen_components["castling_rights"] = castling_rights.replace("Q", "")
-
-                else:
-                    new_fen_components["castling_rights"] = castling_rights.replace("K", "")
-
-            else:
-
-                new_fen_components["castling_rights"] = castling_rights
-
-        elif active_color == "b" and ("k" in castling_rights or "q" in castling_rights):
-            if move_tuple[0] == "king":
-                new_fen_components["castling_rights"] = castling_rights.replace("k", "").replace("q", "")
-            
-            elif move_tuple[0] == "rook":
-                if move_tuple[1] == "A8":
-                    new_fen_components["castling_rights"] = castling_rights.replace("q", "")
-
-                else:
-                    new_fen_components["castling_rights"] = castling_rights.replace("k", "")
-            
-            else:
-                new_fen_components["castling_rights"] = castling_rights
-
-        else:
-            new_fen_components["castling_rights"] = castling_rights
-            
-        if new_fen_components["castling_rights"] == "":
-            new_fen_components["castling_rights"] = "-"
-            
-        # now we can recombine the FEN parts and return the full str
-        components = list(new_fen_components.values())
-        new_fen = ' '.join(components)
-
-        return new_fen
-
-    def create_algebraic_notation(self, move):
-
-        print("creating algebraic move from move=", move)
-
-        validators = {
-            "checkmate": None,
-            "check": None,
-            "kingsideCastle": None,
-            "queensideCastle": None,
-            "sharedRank": None,
-            "sharedFile": None,
-            "capture": None,
-            "promotion": None         
-            } 
-
-        validators["capture"] = self.board.position.get(move[1])
-
-        # check and checkmate
-        # we will create tempoarary fen and board to get details - even though the move has not yet been validated
-
-        temp_board = copy.deepcopy(self.board)
-        piece_moved = move[0]
-        
-        # save the from square
-        piece_from_sqr = piece_moved.occupied_square
-
-        # update our board per this moved piece
-        temp_board.position[piece_moved.occupied_square] = None
-        
-        # copy the piece and move to its new square
-        temp_piece_moved = copy.deepcopy(piece_moved)
-        temp_piece_moved.occupied_square = move[1]
-        temp_board.position[temp_piece_moved.occupied_square] = temp_piece_moved
-
-        validators["checkmate"] = temp_board.is_checkmate()
-        validators["check"] = temp_board.in_check
-        
-        # -------------------- castling validation *************** needs amending **********************************
-        # kingside castling
-        if piece_from_sqr in ["E1", "E8"] and temp_piece_moved.type == "king" and move[1] in ["G1", "G8"]:
-            if validators['checkmate']:
-                return "O-O#"
-            elif validators['check']:
-                return "O-O+"
-            else:
-                return "O-O"
-
-        # queenside castling
-        elif piece_from_sqr in ["E1", "E8"] and temp_piece_moved.type == "king" and move[1] in ["C1", "C8"]:
-            if validators['checkmate']:
-                return "O-O-O#"
-            elif validators['check']:
-                return "O-O-O+"
-            else:
-                return "O-O-O"
-        # -------------------------------------------------------
-
-
-        #  -------- promotion validation - for now will just automatically promote to queen, parsed promotion TBC
-        if move[0].type == "pawn" and move[1][1] == "8":
-            validators['promotion'] = "queen"
-
-        # -------- capture validation --------
-
-
-        # -------- shared rank and/or file validation --------
-        temp_piece_type = temp_piece_moved.type
-
-        # get all pieces of this colour
-        moves = getattr(temp_board, f"{temp_board.active_colour}_legal_moves")    # {("rook", "white", "A1"): ["A2", "A3", ...]}
-       
-        # first remove our intended move from other moves, will raise an error if it doesnt exist in dict
-        del moves[temp_piece_moved]
-        
-        if moves:
-            # check each piece to find the same type
-            print("all moves of same colour: ", moves)
-            all_valid_pieces = moves.keys()
-            same_type_pieces = []
-            
-            for piece in all_valid_pieces:
-                if piece.type == piece_moved.type and move[1] in piece.legal_moves:
-                    same_type_pieces.append(piece)
-            
-            # if there are more than one piece type attacking square, we need to identify by file or rank or both
-
-            # get the rank and file of our intended move from square
-            file = piece_from_sqr[0]
-            rank = piece_from_sqr[1]
-            
-
-            for piece in same_type_pieces:
-                piece_file = piece.occupied_square[0]
-                piece_rank = piece.occupied_square[1]
-
-                if piece_file == file:
-                    validators["sharedFile"] = True
-                    print(piece, " and ", temp_piece_moved, "share the same file")
-                    
-                elif piece_rank == rank:
-                    validators["sharedRank"] = True
-                    print(piece, " and ", temp_piece_moved, "share the same rank")
-
-        # create the string
-        algebraic = ""
-        # part 1: piece -> "Q", "q", "K", "k", ... (note: pawns are indicated by absence of this part)
-        # part 2 (conditional): rank and/or file of piece if there is a conflict of possible moves
-        # part 3 (conditional): x if it is a capture
-        # part 4: landing square of the piece -> "b4"
-        # part 5 (conditional): promotion "=Q"
-        # part 6 (conditional): check -> "+", checkmate -> "#"
-
-        alg_dict = {
-            "queen": "q",
-            "QUEEN": "Q",
-            "pawn": "",
-            "PAWN":"",
-            "bishop": "b",
-            "BISHOP": "B",
-            "knight": "n",
-            "KNIGHT": "N",
-            "king": "k",
-            "KING": "K",
-            "rook": "r",
-            "ROOK": "R"
-            }
-
-        # ----------------- from square (if necessary) ------------------
-        print("\n SAME TYPE PIECES = ", same_type_pieces)
-        if temp_piece_type == "pawn":
-            if validators["capture"]:
-                algebraic += f"{piece_from_sqr[0].lower()}x{move[1].lower()}"
-                
-        if not same_type_pieces:
-            # there are no conflict so only need letter
-            # search for the upper case in dict if white piece, lower if black
-            if temp_piece_type != "pawn":
-                algebraic += alg_dict[move[0].type.upper()] if self.board.active_colour == "white" else alg_dict[move[0].type.lower()] 
-
-        # verify necessary additions to notation for multiple pieces that can occupy the square
-        elif temp_piece_type == "knight":
-            # if it is a knight and multiple could move to square
-        
-            algebraic += "N" if self.board.active_colour == "white" else "n"
-            
-            if validators["sharedRank"] and validators["sharedFile"]:
-                algebraic += piece_from_sqr.lower()
-            
-            elif validators["sharedRank"] and not validators["sharedFile"]:
-                algebraic += piece_from_sqr[0].lower()
-
-            elif validators["sharedFile"] and not validators["sharedRank"]:
-                algebraic += piece_from_sqr[1].lower()
-            
-            else:   # share neither
-                algebraic += piece_from_sqr[0].lower()
-        
-        elif temp_piece_type == "queen" and moves:
-            # if it is a queen and multiple could move to square
-            algebraic += "Q" if self.board.active_colour == "white" else "q"
-
-            # shared rank and file, add entire from square
-            if validators["sharedRank"] and validators["sharedFile"]:
-                algebraic += piece_from_sqr.lower()
-
-            # share rank and not file, add from file letter
-            elif validators["sharedRank"] and not validators["sharedFile"]:
-                algebraic += piece_from_sqr[0].lower()
-
-            # share file and not rank, add from rank number
-            elif validators["sharedFile"] and not validators["sharedRank"]:
-                algebraic += piece_from_sqr[1].lower()
-
-        elif temp_piece_type == "rook":
-            algebraic += "R" if self.board.active_colour == "white" else "r" 
-
-            if validators["sharedFile"]:
-                algebraic += piece_from_sqr[0].lower()
-
-            elif validators["sharedRank"]:
-                algebraic += piece_from_sqr[1].lower()
-
-        elif temp_piece_type == "bishop":
-            algebraic += "B" if self.board.active_colour == "white" else "b"
-
-            if validators['sharedFile'] or validators['sharedRank']:
-                algebraic +=piece_from_sqr[0].lower()
-        
-        # add "x" for captures
-        if validators["capture"]:
-            algebraic += "x"
-
-        # add landing square
-        algebraic += move[1].lower()
-
-        # add promotion if necessary
-        if validators["promotion"]:
-            algebraic += f"={alg_dict[validators['promotion'].upper()]}" if self.board.active_colour == 'white' else f"={alg_dict[validators['promotion'].upper()]}"
-
-        # add check or checkmate
-        if validators["checkmate"]:
-            algebraic += "#"
-        
-        if validators["check"]:
-            algebraic += "+"
-
-        print("ALGEBRAIC CONVERSION: ", algebraic)
-        print("SELF.BOARD.POSITION: ", self.board.position)
-        return algebraic
-
     def run_user_move(self):
         while True:
             move = input("Make move: ")
             # check that this move is algebraic notation
-            if not algebraic_notation.is_valid_notation(move):
+            if not algebraic_utils.is_valid_notation(move):
                 print("Invalid move syntax. Your move must be in algebraic notation")
                 continue
 
@@ -2291,9 +1694,6 @@ class Bot:
             break
         
         return move_verification, new_fen
-
-
-
 
     def start_game(self):   
         
@@ -2395,5 +1795,5 @@ class Bot:
             self.turn = False
                     
 
-bot = Bot()
-bot.game()
+# bot = Bot()
+# bot.game()

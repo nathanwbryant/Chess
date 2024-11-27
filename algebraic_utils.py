@@ -212,7 +212,103 @@ def is_valid_parsed_notation(parse_obj):
 def is_valid_notation(notation, language='english'):
     return is_valid_parsed_notation(parse_notation(notation, language))
 
+print(parse_notation("Qb8"))
 
-notation = 'be7'
-print(parse_notation(notation))
-#print(is_valid_notation(notation))
+
+
+
+
+
+
+
+def construct_algebraic_notation(
+    piece_type: str,
+    piece_from_sqr: str,
+    to_square: str,
+    validators: dict,
+    same_type_pieces: list,
+    active_colour: str
+) -> str:
+    """
+    Constructs the algebraic notation string for a move.
+
+    Args:
+        piece_type (str): The type of the piece being moved (e.g., 'pawn', 'knight').
+        piece_from_sqr (str): The starting square of the piece (e.g., 'E2').
+        to_square (str): The destination square of the piece (e.g., 'E4').
+        validators (dict): A dictionary containing flags for special move conditions.
+        same_type_pieces (list): List of other pieces of the same type that can move to the to_square.
+        active_colour (str): The active player's colour ('white' or 'black').
+
+    Returns:
+        str: The algebraic notation string for the move.
+    """
+    algebraic = ""
+    alg_dict = {
+        "queen": "Q",
+        "pawn": "",
+        "bishop": "B",
+        "knight": "N",
+        "king": "K",
+        "rook": "R",
+    }
+
+    temp_piece_type = piece_type.lower()
+
+    # Part 1: Piece symbol (absent for pawns)
+    if temp_piece_type != "pawn":
+        piece_symbol = alg_dict[temp_piece_type]
+        algebraic += piece_symbol
+
+    # Part 2: Disambiguation
+    if same_type_pieces and temp_piece_type != "pawn":
+        from_file = piece_from_sqr[0].lower()
+        from_rank = piece_from_sqr[1]
+        shared_file = validators.get("sharedFile", False)
+        shared_rank = validators.get("sharedRank", False)
+
+        if shared_file and shared_rank:
+            algebraic += piece_from_sqr.lower()
+        elif shared_file:
+            algebraic += from_rank
+        elif shared_rank:
+            algebraic += from_file
+        else:
+            algebraic += from_file
+
+    # For pawn captures, include the from file
+    if temp_piece_type == "pawn" and validators.get("capture"):
+        algebraic += piece_from_sqr[0].lower()
+
+    # Part 3: Capture indicator
+    if validators.get("capture"):
+        algebraic += "x"
+
+    # Part 4: Destination square
+    algebraic += to_square.lower()
+
+    # Part 5: Promotion
+    if validators.get("promotion"):
+        promotion_piece = validators["promotion"].lower()
+        algebraic += f"={alg_dict[promotion_piece]}"
+
+    # Part 6: Check or Checkmate
+    if validators.get("checkmate"):
+        algebraic += "#"
+    elif validators.get("check"):
+        algebraic += "+"
+
+    return algebraic
+
+
+
+
+
+
+
+
+
+
+
+
+
